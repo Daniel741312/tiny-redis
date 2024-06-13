@@ -12,6 +12,7 @@
 #include <netinet/ip.h>
 #include <vector>
 #include <unordered_map>
+#include <sys/epoll.h>
 
 
 static void msg(const char *msg) {
@@ -43,6 +44,7 @@ static void fd_set_nb(int fd) {
 
 const size_t k_max_msg = 4096;
 const short PORT = 1234;
+const int EPOLL_SIZE = 512;
 
 enum {
     STATE_REQ = 0,
@@ -248,52 +250,76 @@ int main() {
     fd_set_nb(lfd);
 
     // the event loop
-    std::vector<struct pollfd> poll_args;
+    std::vector<struct epoll_event> epoll_events{EPOLL_SIZE};
+    int epfd = epoll_create(EPOLL_SIZE);
+    if (epfd == -1) {
+        die("epoll_create()");
+    }
+
+    struct epoll_event lev = {
+        .events = EPOLLIN | EPOLLET,
+        .data = {.fd = lfd}
+    };
+
+    rv = epoll_ctl(epfd, EPOLL_CTL_ADD, lfd, &lev);
+    if (rv) {
+        die("epoll_ctl() add lfd");
+    }
+
     while (true) {
         // prepare the arguments of the poll()
-        poll_args.clear();
+        epoll_events.clear();
         // for convenience, the listening fd is put in the first position
-        struct pollfd pfd = {lfd, POLLIN, 0};
-        poll_args.push_back(pfd);
         // connection fds
         for (auto fd_conn : fd2conn) {
             auto conn = fd_conn.second;
             if (!conn) {
                 continue;
             }
-            struct pollfd pfd = {};
-            pfd.fd = conn->fd;
-            pfd.events = (conn->state == STATE_REQ) ? POLLIN : POLLOUT;
-            pfd.events = pfd.events | POLLERR;
-            poll_args.push_back(pfd);
+            struct epoll_event ev = {
+                .events = (conn->state == STATE_REQ) ? EPOLLIN : EPOLLOUT,
+                .data = {.fd = conn->fd}
+            };
+            ev.events |= (EPOLLET | EPOLLERR);
+            rv = epoll_ctl(epfd, EPOLL_CTL_ADD, conn->fd, &ev);
+            if (rv) {
+                if (errno == 17) {
+                    // printf("repeated add\n");
+                } else {
+                    die(strerror(errno));
+                }
+            }
         }
 
         // poll for active fds
         // the timeout argument doesn't matter here
-        int rv = poll(poll_args.data(), (nfds_t)poll_args.size(), 1000);
+        rv = epoll_wait(epfd, epoll_events.data(), EPOLL_SIZE, 1000); 
         if (rv < 0) {
-            die("poll");
+            die("epoll_wait");
         }
 
         // process active connections
-        for (size_t i = 1; i < poll_args.size(); ++i) {
-            if (poll_args[i].revents) {
-                Conn *conn = fd2conn[poll_args[i].fd];
+        for (size_t i = 0; i < rv; ++i) {
+            if (epoll_events[i].data.fd == lfd) {
+                (void)accept_new_conn(lfd);
+                continue;
+            }
+            if (epoll_events[i].events & EPOLLIN ||  epoll_events[i].events & EPOLLOUT) {
+                Conn *conn = fd2conn[epoll_events[i].data.fd];
                 connection_io(conn);
                 if (conn->state == STATE_END) {
                     // client closed normally, or something bad happened.
                     // destroy this connection
                     fd2conn[conn->fd] = NULL;
-                    fd2conn.erase(conn->fd);
+                    rv = epoll_ctl(epfd, EPOLL_CTL_DEL, conn->fd, NULL);
+                    if (rv) {
+                        die("epoll_ctl del");
+                    }
                     (void)close(conn->fd);
+                    fd2conn.erase(conn->fd);
                     free(conn);
                 }
             }
-        }
-
-        // try to accept a new connection if the listening fd is active
-        if (poll_args[0].revents) {
-            (void)accept_new_conn(lfd);
         }
     }
 
