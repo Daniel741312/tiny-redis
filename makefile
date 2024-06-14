@@ -10,4 +10,4 @@ all: $(EXEC_FILES)
 	$(CXX) $(CXXFLAGS) $< -o $@
 
 clean:
-	rm -f $(EXEC_FILES)
+	rm -f $(EXEC_FILES) *.log
