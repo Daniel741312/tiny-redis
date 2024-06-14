@@ -1,27 +1,26 @@
+#include <arpa/inet.h>
 #include <assert.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
 #include <netinet/ip.h>
-#include <vector>
-#include <unordered_map>
+#include <poll.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/epoll.h>
-#include <string>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <map>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 #define DBG
 #include "log.h"
 
-static void msg(const char *msg) {
-    fprintf(stderr, "%s\n", msg);
-}
+static void msg(const char *msg) { fprintf(stderr, "%s\n", msg); }
 
 static void die(const char *msg) {
     int err = errno;
@@ -58,7 +57,7 @@ enum {
 
 struct Conn {
     int fd = -1;
-    uint32_t state = STATE_REQ;     // either STATE_REQ or STATE_RES
+    uint32_t state = STATE_REQ;  // either STATE_REQ or STATE_RES
     // buffer for reading
     size_t rbuf_size = 0;
     uint8_t rbuf[4 + k_max_msg];
@@ -67,13 +66,19 @@ struct Conn {
     size_t wbuf_sent = 0;
     uint8_t wbuf[4 + k_max_msg];
 
-    Conn() {}
-    Conn(int connfd): fd(connfd) {
-        Conn();
+    Conn(int connfd) {
+        assert(connfd > 0);
+        this->fd = connfd;
+        LOG_GREEN("fd = %d", fd);
+    }
+
+    ~Conn() {
+        LOG_RED("fd = %d", fd);
+        close(fd);
     }
 };
 
-std::unordered_map<int, Conn*> fd2conn;
+std::unordered_map<int, Conn *> fd2conn;
 
 static int32_t accept_new_conn(int lfd) {
     // accept
@@ -89,7 +94,7 @@ static int32_t accept_new_conn(int lfd) {
     // set the new connection fd to nonblocking mode
     fd_set_nb(connfd);
     // creating the struct Conn
-    Conn* conn = new Conn(connfd);
+    Conn *conn = new Conn(connfd);
     if (!conn) {
         close(connfd);
         return -1;
@@ -103,9 +108,8 @@ static void state_req(Conn *conn);
 static void state_res(Conn *conn);
 const size_t k_max_args = 1024;
 
-static int32_t parse_req(
-    const uint8_t *data, size_t len, std::vector<std::string> &out)
-{
+static int32_t parse_req(const uint8_t *data, size_t len,
+                         std::vector<std::string> &out) {
     if (len < 4) {
         return -1;
     }
@@ -145,9 +149,8 @@ enum {
 // until we implement a hashtable in the next chapter.
 static std::map<std::string, std::string> g_map;
 
-static uint32_t do_get(
-    const std::vector<std::string> &cmd, uint8_t *res, uint32_t *reslen)
-{
+static uint32_t do_get(const std::vector<std::string> &cmd, uint8_t *res,
+                       uint32_t *reslen) {
     if (!g_map.count(cmd[1])) {
         return RES_NX;
     }
@@ -159,9 +162,8 @@ static uint32_t do_get(
     return RES_OK;
 }
 
-static uint32_t do_set(
-    const std::vector<std::string> &cmd, uint8_t *res, uint32_t *reslen)
-{
+static uint32_t do_set(const std::vector<std::string> &cmd, uint8_t *res,
+                       uint32_t *reslen) {
     (void)res;
     (void)reslen;
     g_map[cmd[1]] = cmd[2];
@@ -169,9 +171,8 @@ static uint32_t do_set(
     return RES_OK;
 }
 
-static uint32_t do_del(
-    const std::vector<std::string> &cmd, uint8_t *res, uint32_t *reslen)
-{
+static uint32_t do_del(const std::vector<std::string> &cmd, uint8_t *res,
+                       uint32_t *reslen) {
     (void)res;
     (void)reslen;
     g_map.erase(cmd[1]);
@@ -183,10 +184,8 @@ static bool cmd_is(const std::string &word, const char *cmd) {
     return 0 == strcasecmp(word.c_str(), cmd);
 }
 
-static int32_t do_request(
-    const uint8_t *req, uint32_t reqlen,
-    uint32_t *rescode, uint8_t *res, uint32_t *reslen)
-{
+static int32_t do_request(const uint8_t *req, uint32_t reqlen,
+                          uint32_t *rescode, uint8_t *res, uint32_t *reslen) {
     std::vector<std::string> cmd;
     if (0 != parse_req(req, reqlen, cmd)) {
         msg("bad req");
@@ -231,10 +230,8 @@ static bool try_one_request(Conn *conn) {
     // printf("client says: %.*s\n", len, &conn->rbuf[4]);
     uint32_t rescode = 0;
     uint32_t wlen = 0;
-    int32_t err = do_request(
-        &conn->rbuf[4], len,
-        &rescode, &conn->wbuf[4 + 4], &wlen
-    );
+    int32_t err =
+        do_request(&conn->rbuf[4], len, &rescode, &conn->wbuf[4 + 4], &wlen);
     if (err) {
         conn->state = STATE_END;
         return false;
@@ -280,7 +277,8 @@ static bool try_fill_buffer(Conn *conn) {
         return false;
     }
     if (rv < 0 && errno == ECONNRESET) {
-        // printf("line: %d, errno = %d, msg = %s\n", __LINE__, errno, strerror(errno));
+        // printf("line: %d, errno = %d, msg = %s\n", __LINE__, errno,
+        // strerror(errno));
         LOG("err_msg: %s", strerror(errno));
         conn->state = STATE_END;
         return false;
@@ -306,13 +304,15 @@ static bool try_fill_buffer(Conn *conn) {
 
     // Try to process requests one by one.
     // Why is there a loop? Please read the explanation of "pipelining".
-    while (try_one_request(conn)) {}
+    while (try_one_request(conn)) {
+    }
     return (conn->state == STATE_REQ);
 }
 
 static void state_req(Conn *conn) {
     LOG("in");
-    while (try_fill_buffer(conn)) {}
+    while (try_fill_buffer(conn)) {
+    }
     LOG("out");
 }
 
@@ -350,7 +350,8 @@ static bool try_flush_buffer(Conn *conn) {
 
 static void state_res(Conn *conn) {
     LOG("in");
-    while (try_flush_buffer(conn)) {}
+    while (try_flush_buffer(conn)) {
+    }
     LOG("out");
 }
 
@@ -380,7 +381,7 @@ int main() {
     struct sockaddr_in addr = {};
     addr.sin_family = AF_INET;
     addr.sin_port = ntohs(PORT);
-    addr.sin_addr.s_addr = ntohl(0);    // wildcard address 0.0.0.0
+    addr.sin_addr.s_addr = ntohl(0);  // wildcard address 0.0.0.0
     int rv = bind(lfd, (const sockaddr *)&addr, sizeof(addr));
     if (rv) {
         die("bind()");
@@ -397,22 +398,20 @@ int main() {
 
     // the event loop
     std::vector<struct epoll_event> epoll_events{EPOLL_SIZE};
-    int epfd = epoll_create(EPOLL_SIZE);
-    if (epfd == -1) {
-        die("epoll_create()");
-    }
-
-    struct epoll_event lev = {
-        .events = EPOLLIN,
-        .data = {.fd = lfd}
-    };
-
-    rv = epoll_ctl(epfd, EPOLL_CTL_ADD, lfd, &lev);
-    if (rv) {
-        die("epoll_ctl() add lfd");
-    }
 
     while (true) {
+        int epfd = epoll_create(EPOLL_SIZE);
+        if (epfd == -1) {
+            die("epoll_create()");
+        } else {
+            LOG_GREEN("epofd created: %d", epfd);
+        }
+
+        struct epoll_event lev = {.events = EPOLLIN, .data = {.fd = lfd}};
+        rv = epoll_ctl(epfd, EPOLL_CTL_ADD, lfd, &lev);
+        if (rv) {
+            die("epoll_ctl() add lfd");
+        }
         // prepare the arguments of the poll()
         epoll_events.clear();
         // for convenience, the listening fd is put in the first position
@@ -425,30 +424,18 @@ int main() {
             LOG("conn->state = %d", conn->state);
             struct epoll_event ev = {
                 .events = (conn->state == STATE_REQ) ? EPOLLIN : EPOLLOUT,
-                .data = {.fd = conn->fd}
-            };
+                .data = {.fd = conn->fd}};
             // ev.events |= (EPOLLERR);
             rv = epoll_ctl(epfd, EPOLL_CTL_ADD, conn->fd, &ev);
             if (rv) {
-                if (errno == 17) {
-                    // printf("repeated add\n");
-                    rv = epoll_ctl(epfd, EPOLL_CTL_MOD, conn->fd, &ev);
-                    LOG("epoll_ctl MOD %d, from EPOLLIN | EPOLLOUT to 0x%x", conn->fd, ev.events);
-
-                    if (rv) {
-                        die("epoll_ctl MOD");
-                    }
-                } else {
-                    die(strerror(errno));
-                }
-            } else {
-                LOG("epoll_ctl ADD %d, event = 0x%x", conn->fd, ev.events);
+                die("epoll_ctl ADD");
             }
+            LOG_GREEN("epoll_ctl ADD %d, event = 0x%x", conn->fd, ev.events);
         }
 
         // poll for active fds
         // the timeout argument doesn't matter here
-        rv = epoll_wait(epfd, epoll_events.data(), EPOLL_SIZE, 1000); 
+        rv = epoll_wait(epfd, epoll_events.data(), EPOLL_SIZE, 1000);
         if (rv < 0) {
             die("epoll_wait");
         } else {
@@ -461,25 +448,29 @@ int main() {
                 (void)accept_new_conn(lfd);
                 continue;
             }
-            if (epoll_events[i].events & EPOLLIN ||  epoll_events[i].events & EPOLLOUT) {
-                LOG_GREEN("epoll_events[i].events = 0x%x, fd = %d", epoll_events[i].events, epoll_events[i].data.fd);
+            if (epoll_events[i].events & EPOLLIN ||
+                epoll_events[i].events & EPOLLOUT) {
+                LOG_GREEN("epoll_events[i].events = 0x%x, fd = %d",
+                          epoll_events[i].events, epoll_events[i].data.fd);
                 Conn *conn = fd2conn[epoll_events[i].data.fd];
                 connection_io(conn);
                 if (conn->state == STATE_END) {
                     // client closed normally, or something bad happened.
                     // destroy this connection
                     fd2conn[conn->fd] = NULL;
+                    fd2conn.erase(conn->fd);
                     rv = epoll_ctl(epfd, EPOLL_CTL_DEL, conn->fd, NULL);
                     if (rv) {
                         die("epoll_ctl DEL");
                     }
-                    (void)close(conn->fd);
-                    fd2conn.erase(conn->fd);
-                    LOG_RED("epoll_ctl DEL, conn->fd = %d, fd2conn.size() = %ld", conn->fd, fd2conn.size());
-                    free(conn);
+                    LOG_RED(
+                        "epoll_ctl DEL, conn->fd = %d, fd2conn.size() = %ld",
+                        conn->fd, fd2conn.size());
+                    delete conn;
                 }
             }
         }
+        close(epfd);
     }
 
     return 0;
