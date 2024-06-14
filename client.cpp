@@ -27,7 +27,6 @@ static void die(const char *msg) {
 static int32_t read_full(int fd, char *buf, size_t n) {
     while (n > 0) {
         ssize_t rv = read(fd, buf, n);
-        LOG("rv = %ld", rv);
         if (rv <= 0) {
             return -1;  // error, or unexpected EOF
         }
@@ -112,11 +111,11 @@ static int32_t read_res(int fd) {
         return -1;
     }
     memcpy(&rescode, &rbuf[4], 4);
-    printf("server says: [%u] %.*s\n", rescode, len - 4, &rbuf[8]);
+    // printf("server says: [%u] %.*s\n", rescode, len - 4, &rbuf[8]);
     return 0;
 }
 
-unsigned long i = 2;
+unsigned long i;
 
 void alarm_die(int signum) {
     printf("i = %ld\n", i);
@@ -143,7 +142,8 @@ int main(int argc, char **argv) {
 
     std::vector<std::string> cmd{{"set"}, {"k"}, {"v"}};
 
-    while (i--) {
+    while (1) {
+        i++;
         int32_t err = send_req(fd, cmd);
         if (err) {
             printf("client send_req error");
@@ -154,7 +154,6 @@ int main(int argc, char **argv) {
             printf("client read_res error");
             goto L_DONE;
         }
-        sleep(3);
     }
 
 L_DONE:

@@ -10,14 +10,14 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/ip.h>
-#include <vector>
-#include <unordered_map>
-#include <sys/epoll.h>
 #include <string>
+#include <vector>
 #include <map>
+#include <unordered_map>
 
-#define DBG
+// #define DBG
 #include "log.h"
+
 
 static void msg(const char *msg) {
     fprintf(stderr, "%s\n", msg);
@@ -47,14 +47,14 @@ static void fd_set_nb(int fd) {
 }
 
 const size_t k_max_msg = 4096;
-const short PORT = 1234;
-const int EPOLL_SIZE = 1024;
 
 enum {
     STATE_REQ = 0,
     STATE_RES = 1,
     STATE_END = 2,  // mark the connection for deletion
 };
+
+const short PORT = 1234;
 
 struct Conn {
     int fd = -1;
@@ -67,10 +67,17 @@ struct Conn {
     size_t wbuf_sent = 0;
     uint8_t wbuf[4 + k_max_msg];
 
-    Conn() {}
-    Conn(int connfd): fd(connfd) {
-        Conn();
+    Conn(int connfd) {
+        assert(connfd > 0);
+        this->fd = connfd;
+        LOG_BLUE("fd = %d", fd);
     }
+
+    ~Conn() {
+        LOG_RED("fd = %d", fd);
+        close(fd);
+    }
+
 };
 
 std::unordered_map<int, Conn*> fd2conn;
@@ -84,7 +91,6 @@ static int32_t accept_new_conn(int lfd) {
         msg("accept() error");
         return -1;  // error
     }
-    LOG("connfd = %d", connfd);
 
     // set the new connection fd to nonblocking mode
     fd_set_nb(connfd);
@@ -96,11 +102,13 @@ static int32_t accept_new_conn(int lfd) {
     }
     fd2conn.insert({connfd, conn});
     LOG("fd2conn.size() = %ld", fd2conn.size());
+
     return 0;
 }
 
 static void state_req(Conn *conn);
 static void state_res(Conn *conn);
+
 const size_t k_max_args = 1024;
 
 static int32_t parse_req(
@@ -152,7 +160,6 @@ static uint32_t do_get(
         return RES_NX;
     }
     std::string &val = g_map[cmd[1]];
-    LOG("k = %s", cmd[1].c_str());
     assert(val.size() <= k_max_msg);
     memcpy(res, val.data(), val.size());
     *reslen = (uint32_t)val.size();
@@ -165,7 +172,6 @@ static uint32_t do_set(
     (void)res;
     (void)reslen;
     g_map[cmd[1]] = cmd[2];
-    LOG("k = %s, v = %s", cmd[1].c_str(), cmd[2].c_str());
     return RES_OK;
 }
 
@@ -175,7 +181,6 @@ static uint32_t do_del(
     (void)res;
     (void)reslen;
     g_map.erase(cmd[1]);
-    LOG("k = %s", cmd[1].c_str());
     return RES_OK;
 }
 
@@ -227,8 +232,7 @@ static bool try_one_request(Conn *conn) {
         return false;
     }
 
-    // got one request, do something with it
-    // printf("client says: %.*s\n", len, &conn->rbuf[4]);
+    // got one request, generate the response.
     uint32_t rescode = 0;
     uint32_t wlen = 0;
     int32_t err = do_request(
@@ -240,13 +244,9 @@ static bool try_one_request(Conn *conn) {
         return false;
     }
     wlen += 4;
-
-    // generating echoing response
     memcpy(&conn->wbuf[0], &wlen, 4);
     memcpy(&conn->wbuf[4], &rescode, 4);
-    conn->wbuf_size = 4 + len;
-    LOG("wlen = %u", wlen);
-    LOG("rescode = %u", rescode);
+    conn->wbuf_size = 4 + wlen;
 
     // remove the request from the buffer.
     // note: frequent memmove is inefficient.
@@ -273,21 +273,12 @@ static bool try_fill_buffer(Conn *conn) {
         size_t cap = sizeof(conn->rbuf) - conn->rbuf_size;
         rv = read(conn->fd, &conn->rbuf[conn->rbuf_size], cap);
     } while (rv < 0 && errno == EINTR);
-    LOG("read rv = %ld", rv);
     if (rv < 0 && errno == EAGAIN) {
         // got EAGAIN, stop.
-        LOG("err_msg: %s", strerror(errno));
-        return false;
-    }
-    if (rv < 0 && errno == ECONNRESET) {
-        // printf("line: %d, errno = %d, msg = %s\n", __LINE__, errno, strerror(errno));
-        LOG("err_msg: %s", strerror(errno));
-        conn->state = STATE_END;
         return false;
     }
     if (rv < 0) {
         msg("read() error");
-        LOG("errno = %d, msg = %s", errno, strerror(errno));
         conn->state = STATE_END;
         return false;
     }
@@ -319,14 +310,11 @@ static bool try_flush_buffer(Conn *conn) {
     do {
         size_t remain = conn->wbuf_size - conn->wbuf_sent;
         rv = write(conn->fd, &conn->wbuf[conn->wbuf_sent], remain);
-        LOG("write rv = %ld", rv);
     } while (rv < 0 && errno == EINTR);
     if (rv < 0 && errno == EAGAIN) {
         // got EAGAIN, stop.
-        LOG("err_msg: %s", strerror(errno));
         return false;
     }
-    LOG("err_msg: %s", strerror(errno));
     if (rv < 0) {
         msg("write() error");
         conn->state = STATE_END;
@@ -336,7 +324,6 @@ static bool try_flush_buffer(Conn *conn) {
     assert(conn->wbuf_sent <= conn->wbuf_size);
     if (conn->wbuf_sent == conn->wbuf_size) {
         // response was fully sent, change state back
-        LOG("response was fully sent, change state back");
         conn->state = STATE_REQ;
         conn->wbuf_sent = 0;
         conn->wbuf_size = 0;
@@ -351,134 +338,88 @@ static void state_res(Conn *conn) {
 }
 
 static void connection_io(Conn *conn) {
-    LOG("conn->state = %d", conn->state);
     if (conn->state == STATE_REQ) {
-        LOG("before state_req");
         state_req(conn);
-        LOG("after state_req");
     } else if (conn->state == STATE_RES) {
-        LOG("before state_res");
         state_res(conn);
-        LOG("after state_res");
     } else {
         assert(0);  // not expected
     }
 }
 
 int main() {
-    int lfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (lfd < 0) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
         die("socket()");
-    } else {
-        LOG("lfd = %d", lfd);
     }
 
     int val = 1;
-    setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
 
     // bind
     struct sockaddr_in addr = {};
     addr.sin_family = AF_INET;
-    addr.sin_port = ntohs(PORT);
+    addr.sin_port = ntohs(1234);
     addr.sin_addr.s_addr = ntohl(0);    // wildcard address 0.0.0.0
-    int rv = bind(lfd, (const sockaddr *)&addr, sizeof(addr));
+    int rv = bind(fd, (const sockaddr *)&addr, sizeof(addr));
     if (rv) {
         die("bind()");
     }
 
     // listen
-    rv = listen(lfd, SOMAXCONN);
+    rv = listen(fd, SOMAXCONN);
     if (rv) {
         die("listen()");
     }
 
     // set the listen fd to nonblocking mode
-    fd_set_nb(lfd);
+    fd_set_nb(fd);
 
     // the event loop
-    std::vector<struct epoll_event> epoll_events{EPOLL_SIZE};
-    int epfd = epoll_create(EPOLL_SIZE);
-    if (epfd == -1) {
-        die("epoll_create()");
-    }
-
-    struct epoll_event lev = {
-        .events = EPOLLIN,
-        .data = {.fd = lfd}
-    };
-
-    rv = epoll_ctl(epfd, EPOLL_CTL_ADD, lfd, &lev);
-    if (rv) {
-        die("epoll_ctl() add lfd");
-    }
-
+    std::vector<struct pollfd> poll_args;
     while (true) {
         // prepare the arguments of the poll()
-        epoll_events.clear();
+        poll_args.clear();
         // for convenience, the listening fd is put in the first position
+        struct pollfd pfd = {fd, POLLIN, 0};
+        poll_args.push_back(pfd);
         // connection fds
-        for (auto fd_conn : fd2conn) {
-            auto conn = fd_conn.second;
+        for (auto& fd_conn: fd2conn) {
+            Conn* conn = fd_conn.second;
             if (!conn) {
                 continue;
             }
-            LOG("conn->state = %d", conn->state);
-            struct epoll_event ev = {
-                .events = (conn->state == STATE_REQ) ? EPOLLIN : EPOLLOUT,
-                .data = {.fd = conn->fd}
-            };
-            // ev.events |= (EPOLLERR);
-            rv = epoll_ctl(epfd, EPOLL_CTL_ADD, conn->fd, &ev);
-            if (rv) {
-                if (errno == 17) {
-                    // printf("repeated add\n");
-                    rv = epoll_ctl(epfd, EPOLL_CTL_MOD, conn->fd, &ev);
-                    LOG("epoll_ctl MOD %d, from EPOLLIN | EPOLLOUT to 0x%x", conn->fd, ev.events);
-
-                    if (rv) {
-                        die("epoll_ctl MOD");
-                    }
-                } else {
-                    die(strerror(errno));
-                }
-            } else {
-                LOG("epoll_ctl ADD %d, event = 0x%x", conn->fd, ev.events);
-            }
+            struct pollfd pfd = {};
+            pfd.fd = conn->fd;
+            pfd.events = (conn->state == STATE_REQ) ? POLLIN : POLLOUT;
+            pfd.events = pfd.events | POLLERR;
+            poll_args.push_back(pfd);
         }
 
         // poll for active fds
         // the timeout argument doesn't matter here
-        rv = epoll_wait(epfd, epoll_events.data(), EPOLL_SIZE, 1000); 
+        int rv = poll(poll_args.data(), (nfds_t)poll_args.size(), 1000);
         if (rv < 0) {
-            die("epoll_wait");
-        } else {
-            LOG("epoll_wait returns rv = %d", rv);
+            die("poll");
         }
 
         // process active connections
-        for (size_t i = 0; i < rv; ++i) {
-            if (epoll_events[i].data.fd == lfd) {
-                (void)accept_new_conn(lfd);
-                continue;
-            }
-            if (epoll_events[i].events & EPOLLIN ||  epoll_events[i].events & EPOLLOUT) {
-                LOG("epoll_events[i].events = 0x%x, fd = %d", epoll_events[i].events, epoll_events[i].data.fd);
-                Conn *conn = fd2conn[epoll_events[i].data.fd];
+        for (size_t i = 1; i < poll_args.size(); ++i) {
+            if (poll_args[i].revents) {
+                Conn *conn = fd2conn[poll_args[i].fd];
                 connection_io(conn);
                 if (conn->state == STATE_END) {
                     // client closed normally, or something bad happened.
                     // destroy this connection
                     fd2conn[conn->fd] = NULL;
-                    rv = epoll_ctl(epfd, EPOLL_CTL_DEL, conn->fd, NULL);
-                    if (rv) {
-                        die("epoll_ctl DEL");
-                    }
-                    (void)close(conn->fd);
-                    fd2conn.erase(conn->fd);
-                    LOG("epoll_ctl DEL, conn->fd = %d, fd2conn.size() = %ld", conn->fd, fd2conn.size());
-                    free(conn);
+                    delete conn;
                 }
             }
+        }
+
+        // try to accept a new connection if the listening fd is active
+        if (poll_args[0].revents) {
+            (void)accept_new_conn(fd);
         }
     }
 
