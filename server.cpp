@@ -311,7 +311,9 @@ static bool try_fill_buffer(Conn *conn) {
 }
 
 static void state_req(Conn *conn) {
+    LOG("in");
     while (try_fill_buffer(conn)) {}
+    LOG("out");
 }
 
 static bool try_flush_buffer(Conn *conn) {
@@ -319,7 +321,7 @@ static bool try_flush_buffer(Conn *conn) {
     do {
         size_t remain = conn->wbuf_size - conn->wbuf_sent;
         rv = write(conn->fd, &conn->wbuf[conn->wbuf_sent], remain);
-        LOG("write rv = %ld", rv);
+        LOG_BLUE("write rv = %ld", rv);
     } while (rv < 0 && errno == EINTR);
     if (rv < 0 && errno == EAGAIN) {
         // got EAGAIN, stop.
@@ -347,19 +349,17 @@ static bool try_flush_buffer(Conn *conn) {
 }
 
 static void state_res(Conn *conn) {
+    LOG("in");
     while (try_flush_buffer(conn)) {}
+    LOG("out");
 }
 
 static void connection_io(Conn *conn) {
     LOG("conn->state = %d", conn->state);
     if (conn->state == STATE_REQ) {
-        LOG("before state_req");
         state_req(conn);
-        LOG("after state_req");
     } else if (conn->state == STATE_RES) {
-        LOG("before state_res");
         state_res(conn);
-        LOG("after state_res");
     } else {
         assert(0);  // not expected
     }
@@ -452,7 +452,7 @@ int main() {
         if (rv < 0) {
             die("epoll_wait");
         } else {
-            LOG("epoll_wait returns rv = %d", rv);
+            LOG_BLUE("epoll_wait returns rv = %d", rv);
         }
 
         // process active connections
@@ -462,7 +462,7 @@ int main() {
                 continue;
             }
             if (epoll_events[i].events & EPOLLIN ||  epoll_events[i].events & EPOLLOUT) {
-                LOG("epoll_events[i].events = 0x%x, fd = %d", epoll_events[i].events, epoll_events[i].data.fd);
+                LOG_GREEN("epoll_events[i].events = 0x%x, fd = %d", epoll_events[i].events, epoll_events[i].data.fd);
                 Conn *conn = fd2conn[epoll_events[i].data.fd];
                 connection_io(conn);
                 if (conn->state == STATE_END) {
@@ -475,7 +475,7 @@ int main() {
                     }
                     (void)close(conn->fd);
                     fd2conn.erase(conn->fd);
-                    LOG("epoll_ctl DEL, conn->fd = %d, fd2conn.size() = %ld", conn->fd, fd2conn.size());
+                    LOG_RED("epoll_ctl DEL, conn->fd = %d, fd2conn.size() = %ld", conn->fd, fd2conn.size());
                     free(conn);
                 }
             }

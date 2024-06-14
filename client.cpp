@@ -77,6 +77,7 @@ static int32_t send_req(int fd, const std::vector<std::string> &cmd) {
 }
 
 static int32_t read_res(int fd) {
+    sleep(5);
     // 4 bytes header
     char rbuf[4 + k_max_msg + 1];
     errno = 0;
@@ -116,7 +117,7 @@ static int32_t read_res(int fd) {
     return 0;
 }
 
-unsigned long i = 2;
+unsigned long i = 3;
 
 void alarm_die(int signum) {
     printf("i = %ld\n", i);
@@ -141,9 +142,12 @@ int main(int argc, char **argv) {
         die("connect");
     }
 
-    std::vector<std::string> cmd{{"set"}, {"k"}, {"v"}};
+    std::vector<std::string> cmd{3};
 
     while (i--) {
+        cmd[0] = "set";
+        cmd[1] = std::string(i, 'k');
+        cmd[2] = std::string(i, 'v');
         int32_t err = send_req(fd, cmd);
         if (err) {
             printf("client send_req error");
