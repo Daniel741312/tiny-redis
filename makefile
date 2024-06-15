@@ -1,5 +1,4 @@
 CXX = g++
-CXXFLAGS = -std=c++11
 
 SRC_FILES := $(wildcard *.cpp)
 EXEC_FILES := $(patsubst %.cpp,%,$(SRC_FILES))

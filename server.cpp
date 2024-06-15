@@ -156,7 +156,8 @@ enum {
 
 // The data structure for the key space. This is just a placeholder
 // until we implement a hashtable in the next chapter.
-HMap g_map;
+
+    HMap g_map;
 
 // the structure for the key
 struct Entry {
@@ -182,12 +183,14 @@ static uint64_t str_hash(const uint8_t *data, size_t len) {
 static uint32_t do_get(
     std::vector<std::string> &cmd, uint8_t *res, uint32_t *reslen)
 {
+    LOG("in");
     Entry key;
     key.key.swap(cmd[1]);
     key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
 
     HNode *node = g_map.lookup(&key.node, &entry_eq);
     if (!node) {
+        LOG_RED("RES_NX");
         return RES_NX;
     }
 
@@ -195,6 +198,7 @@ static uint32_t do_get(
     assert(val.size() <= k_max_msg);
     memcpy(res, val.data(), val.size());
     *reslen = (uint32_t)val.size();
+    LOG("out");
     return RES_OK;
 }
 
@@ -466,6 +470,7 @@ int main() {
                     // client closed normally, or something bad happened.
                     // destroy this connection
                     fd2conn[conn->fd] = NULL;
+                    fd2conn.erase(conn->fd);
                     delete conn;
                 }
             }
