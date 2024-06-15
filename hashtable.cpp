@@ -85,6 +85,8 @@ HNode* HMap::pop(HNode* key, bool (*eq)(HNode*, HNode*)) {
     return nullptr;
 }
 
+size_t HMap::size () const { return ht1.size + ht2.size; }
+
 void HMap::hm_help_resizing() {
     size_t nwork = 0;
     while (nwork < k_resizing_work && ht2.size > 0) {

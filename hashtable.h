@@ -42,6 +42,7 @@ struct HMap {
     HNode* lookup(HNode* key, bool (*eq)(HNode*, HNode*));
     void insert(HNode* node);
     HNode* pop(HNode* key , bool (*eq)(HNode*, HNode*));
+    size_t size() const;
 
 private:
     void hm_help_resizing();
