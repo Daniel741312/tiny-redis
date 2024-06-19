@@ -19,6 +19,7 @@
 #include "hashtable.h"
 #include "common.h"
 #include "zset.h"
+#include "list.h"
 
 // #define DBG
 #include "log.h"
@@ -31,6 +32,12 @@ static void die(const char *msg) {
     int err = errno;
     fprintf(stderr, "[%d] %s\n", err, msg);
     abort();
+}
+
+static uint64_t get_monotonic_usec() {
+    timespec tv = {0, 0};
+    clock_gettime(CLOCK_MONOTONIC, &tv);
+    return uint64_t(tv.tv_sec) * 1000000 + tv.tv_nsec / 1000;
 }
 
 static void fd_set_nb(int fd) {
@@ -51,6 +58,14 @@ static void fd_set_nb(int fd) {
 }
 
 const size_t k_max_msg = 4096;
+const short PORT = 1234;
+
+struct Conn;
+
+std::unordered_map<int, Conn*> fd2conn;
+// The data structure for the key space.
+HMap g_map;
+DList idle_list;
 
 enum {
     STATE_REQ = 0,
@@ -58,7 +73,6 @@ enum {
     STATE_END = 2,  // mark the connection for deletion
 };
 
-const short PORT = 1234;
 
 struct Conn {
     int fd = -1;
@@ -70,21 +84,24 @@ struct Conn {
     size_t wbuf_size = 0;
     size_t wbuf_sent = 0;
     uint8_t wbuf[4 + k_max_msg];
+    uint64_t idle_start = 0;
+    DList idle_list;
 
     Conn(int connfd) {
         assert(connfd > 0);
-        this->fd = connfd;
+        fd = connfd;
+        idle_start = get_monotonic_usec();
         LOG_BLUE("fd = %d", fd);
     }
 
     ~Conn() {
         LOG_RED("fd = %d", fd);
         close(fd);
+        dlist_detach(&idle_list);
+        fd2conn.erase(fd);  // safe even if `fd` not exists in map
     }
 
 };
-
-std::unordered_map<int, Conn*> fd2conn;
 
 static int32_t accept_new_conn(int lfd) {
     // accept
@@ -104,6 +121,7 @@ static int32_t accept_new_conn(int lfd) {
         close(connfd);
         return -1;
     }
+    dlist_insert_before(&idle_list, &conn->idle_list);
     fd2conn.insert({connfd, conn});
     LOG("fd2conn.size() = %ld", fd2conn.size());
 
@@ -153,10 +171,6 @@ enum {
     RES_NX = 2,
 };
 
-// The data structure for the key space. This is just a placeholder
-// until we implement a hashtable in the next chapter.
-
-HMap g_map;
 
 enum {
     T_STR = 0,
@@ -596,6 +610,10 @@ static void state_res(Conn *conn) {
 }
 
 static void connection_io(Conn *conn) {
+    conn->idle_start = get_monotonic_usec();
+    dlist_detach(&conn->idle_list);
+    dlist_insert_before(&idle_list, &conn->idle_list);
+
     if (conn->state == STATE_REQ) {
         state_req(conn);
     } else if (conn->state == STATE_RES) {
@@ -605,7 +623,41 @@ static void connection_io(Conn *conn) {
     }
 }
 
+const uint64_t k_idle_timeout_ms = 5 * 1000;
+
+static uint32_t next_timer_ms() {
+    if (dlist_empty(&idle_list)) {
+        return 10000;   // no timer, the value doesn't matter
+    }
+
+    uint64_t now_us = get_monotonic_usec();
+    Conn *next = container_of(idle_list.next, Conn, idle_list);
+    uint64_t next_us = next->idle_start + k_idle_timeout_ms * 1000;
+    if (next_us <= now_us) {
+        // missed?
+        return 0;
+    }
+
+    return (uint32_t)((next_us - now_us) / 1000);
+}
+
+static void process_timers() {
+    uint64_t now_us = get_monotonic_usec();
+    while (!dlist_empty(&idle_list)) {
+        Conn *next = container_of(idle_list.next, Conn, idle_list);
+        uint64_t next_us = next->idle_start + k_idle_timeout_ms * 1000;
+        if (next_us >= now_us + 1000) {
+            // not ready, the extra 1000us is for the ms resolution of poll()
+            break;
+        }
+
+        printf("removing idle connection: %d\n", next->fd);
+        delete next;
+    }
+}
+
 int main() {
+    dlist_init(&idle_list);
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         die("socket()");
@@ -655,8 +707,8 @@ int main() {
         }
 
         // poll for active fds
-        // the timeout argument doesn't matter here
-        int rv = poll(poll_args.data(), (nfds_t)poll_args.size(), 1000);
+        int timeout_ms = (int)next_timer_ms();
+        int rv = poll(poll_args.data(), (nfds_t)poll_args.size(), timeout_ms);
         if (rv < 0) {
             die("poll");
         }
@@ -669,12 +721,12 @@ int main() {
                 if (conn->state == STATE_END) {
                     // client closed normally, or something bad happened.
                     // destroy this connection
-                    fd2conn[conn->fd] = NULL;
-                    fd2conn.erase(conn->fd);
                     delete conn;
                 }
             }
         }
+
+        process_timers();
 
         // try to accept a new connection if the listening fd is active
         if (poll_args[0].revents) {
